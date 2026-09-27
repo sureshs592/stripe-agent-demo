@@ -56,6 +56,43 @@ function headerValue(message: GmailMessageResource, name: string): string {
   return message.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 
+const PROCESSED_LABEL_NAME = "processed";
+
+type GmailLabel = { id: string; name: string };
+
+type GmailLabelListResponse = { labels?: GmailLabel[] };
+
+async function getOrCreateLabelId(accessToken: string, labelName: string): Promise<string> {
+  const authHeaders = { Authorization: `Bearer ${accessToken}` };
+
+  const listResponse = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
+    headers: authHeaders,
+  });
+  if (!listResponse.ok) {
+    throw new Error(`Gmail labels list failed: ${listResponse.status} ${await listResponse.text()}`);
+  }
+  const { labels = [] } = (await listResponse.json()) as GmailLabelListResponse;
+  const existing = labels.find((label) => label.name === labelName);
+  if (existing) {
+    return existing.id;
+  }
+
+  const createResponse = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: labelName,
+      labelListVisibility: "labelShow",
+      messageListVisibility: "show",
+    }),
+  });
+  if (!createResponse.ok) {
+    throw new Error(`Gmail label create failed: ${createResponse.status} ${await createResponse.text()}`);
+  }
+  const created = (await createResponse.json()) as GmailLabel;
+  return created.id;
+}
+
 function decodeBase64Url(data: string): string {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
@@ -78,7 +115,7 @@ export async function searchGmail(env: Env): Promise<GmailMessage[]> {
   const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
   const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
-  listUrl.searchParams.set("q", `label:${env.GMAIL_LABEL}`);
+  listUrl.searchParams.set("q", `label:${env.GMAIL_LABEL} -label:${PROCESSED_LABEL_NAME}`);
   listUrl.searchParams.set("maxResults", "20");
 
   const listResponse = await fetch(listUrl, { headers: authHeaders });
@@ -109,4 +146,18 @@ export async function searchGmail(env: Env): Promise<GmailMessage[]> {
       };
     })
   );
+}
+
+export async function markThreadProcessed(env: Env, threadId: string): Promise<void> {
+  const accessToken = await getAccessToken(env);
+  const labelId = await getOrCreateLabelId(accessToken, PROCESSED_LABEL_NAME);
+
+  const modifyResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}/modify`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ addLabelIds: [labelId] }),
+  });
+  if (!modifyResponse.ok) {
+    throw new Error(`Gmail thread modify failed: ${modifyResponse.status} ${await modifyResponse.text()}`);
+  }
 }

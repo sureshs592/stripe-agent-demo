@@ -2,7 +2,7 @@ import { Agent } from "agents";
 import { generateText, stepCountIs, tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import { searchGmail } from "./gmail";
+import { markThreadProcessed, searchGmail } from "./gmail";
 import skillPrompt from "../skills/pay-bills.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
@@ -47,11 +47,13 @@ export class EmailStripeAgent extends Agent<Env, State> {
         inputSchema: z.object({}),
         execute: async () => searchGmail(this.env),
       }),
-      is_thread_processed: tool({
-        description: "Check whether a Gmail thread has already been processed (its bill already paid). Returns true if the thread should be skipped.",
+      mark_thread_processed: tool({
+        description: "Apply the \"processed\" Gmail label to a thread once its bill has been paid, so it won't be picked up on the next run.",
         inputSchema: z.object({ threadId: z.string() }),
-        // TODO: back this with the real processed-thread datastore once it exists.
-        execute: async ({ threadId }) => ({ threadId, processed: false }),
+        execute: async ({ threadId }) => {
+          await markThreadProcessed(this.env, threadId);
+          return { threadId, processed: true };
+        },
       }),
       ...this.mcp.getAITools(),
     };
