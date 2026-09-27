@@ -3,7 +3,7 @@ import { generateText, stepCountIs, tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { searchGmail } from "./gmail";
-import skillPrompt from "../skills/handle-refund-emails.md";
+import skillPrompt from "../skills/pay-bills.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
 
@@ -43,9 +43,15 @@ export class EmailStripeAgent extends Agent<Env, State> {
 
     const tools = {
       search_gmail: tool({
-        description: `Search the Gmail inbox for messages under the "${this.env.GMAIL_LABEL}" label. Returns each message's id, sender, subject, snippet, and received timestamp.`,
+        description: `Search the Gmail inbox for messages under the "${this.env.GMAIL_LABEL}" label. Returns each message's id, threadId, sender, subject, snippet, body, and received timestamp.`,
         inputSchema: z.object({}),
         execute: async () => searchGmail(this.env),
+      }),
+      is_thread_processed: tool({
+        description: "Check whether a Gmail thread has already been processed (its bill already paid). Returns true if the thread should be skipped.",
+        inputSchema: z.object({ threadId: z.string() }),
+        // TODO: back this with the real processed-thread datastore once it exists.
+        execute: async ({ threadId }) => ({ threadId, processed: false }),
       }),
       ...this.mcp.getAITools(),
     };
@@ -53,7 +59,7 @@ export class EmailStripeAgent extends Agent<Env, State> {
     const { text, toolCalls, toolResults } = await generateText({
       model: anthropic("claude-sonnet-5"),
       system: skillPrompt,
-      prompt: "Check the inbox and handle any refund-worthy emails now.",
+      prompt: "Check the inbox and pay any bills that are ready to be paid now.",
       tools,
       stopWhen: stepCountIs(8),
     });

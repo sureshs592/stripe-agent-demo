@@ -1,8 +1,10 @@
 export type GmailMessage = {
   id: string;
+  threadId: string;
   from: string;
   subject: string;
   snippet: string;
+  body: string;
   receivedAt: string;
 };
 
@@ -34,17 +36,41 @@ type GmailListResponse = {
   messages?: { id: string }[];
 };
 
-type GmailMessageResource = {
+type GmailMessagePart = {
+  mimeType: string;
+  body?: { data?: string };
+  parts?: GmailMessagePart[];
+};
+
+type GmailMessageResource = GmailMessagePart & {
   id: string;
+  threadId: string;
   snippet: string;
   internalDate: string;
-  payload: {
+  payload: GmailMessagePart & {
     headers: { name: string; value: string }[];
   };
 };
 
 function headerValue(message: GmailMessageResource, name: string): string {
   return message.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
+}
+
+function decodeBase64Url(data: string): string {
+  const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
+  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+function extractPlainTextBody(part: GmailMessagePart): string {
+  if (part.mimeType === "text/plain" && part.body?.data) {
+    return decodeBase64Url(part.body.data);
+  }
+  for (const child of part.parts ?? []) {
+    const text = extractPlainTextBody(child);
+    if (text) return text;
+  }
+  return "";
 }
 
 export async function searchGmail(env: Env): Promise<GmailMessage[]> {
@@ -64,9 +90,7 @@ export async function searchGmail(env: Env): Promise<GmailMessage[]> {
   return Promise.all(
     messages.map(async ({ id }) => {
       const messageUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
-      messageUrl.searchParams.set("format", "metadata");
-      messageUrl.searchParams.append("metadataHeaders", "From");
-      messageUrl.searchParams.append("metadataHeaders", "Subject");
+      messageUrl.searchParams.set("format", "full");
 
       const messageResponse = await fetch(messageUrl, { headers: authHeaders });
       if (!messageResponse.ok) {
@@ -76,9 +100,11 @@ export async function searchGmail(env: Env): Promise<GmailMessage[]> {
 
       return {
         id: message.id,
+        threadId: message.threadId,
         from: headerValue(message, "From"),
         subject: headerValue(message, "Subject"),
         snippet: message.snippet,
+        body: extractPlainTextBody(message.payload),
         receivedAt: new Date(Number(message.internalDate)).toISOString(),
       };
     })
