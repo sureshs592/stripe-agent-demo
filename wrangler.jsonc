@@ -11,5 +11,8 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["EmailStripeAgent"] }
+  ],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": true }
   ]
 }

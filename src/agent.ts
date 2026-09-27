@@ -1,97 +1,72 @@
 import { Agent } from "agents";
+import { generateText, stepCountIs, tool } from "ai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
 import { searchGmail } from "./gmail";
-import { matchRule } from "./rules";
+import skillPrompt from "../skills/handle-refund-emails.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
 
+type ToolCallLog = {
+  tool: string;
+  input: unknown;
+  output?: unknown;
+};
+
 type RunResult = {
-  messageId: string;
-  subject: string;
-  action: string | null;
-  status: "matched" | "no_match" | "error";
-  detail?: string;
+  summary: string;
+  toolCalls: ToolCallLog[];
 };
 
 type State = {
   lastRunAt: string | null;
-  lastRunResults: RunResult[];
+  lastRunResult: RunResult | null;
 };
 
 export class EmailStripeAgent extends Agent<Env, State> {
-  initialState: State = { lastRunAt: null, lastRunResults: [] };
-
-  private stripeServerId?: string;
+  initialState: State = { lastRunAt: null, lastRunResult: null };
 
   async onStart() {
     // callbackHost is only used to build an OAuth redirect URI; Stripe's MCP
     // server is authenticated with an API key below, so this value is never
     // actually used, but addMcpServer requires it when called outside a
     // request context (e.g. RPC via getAgentByName, as /run does).
-    const connection = await this.addMcpServer(
-      "stripe",
-      STRIPE_MCP_URL,
-      "https://unused.invalid",
-      undefined,
-      {
-        transport: {
-          headers: { Authorization: `Bearer ${this.env.STRIPE_API_KEY}` },
-        },
-      }
-    );
-    this.stripeServerId = connection.id;
-  }
-
-  async run(): Promise<RunResult[]> {
-    const messages = await searchGmail(this.env);
-    const results: RunResult[] = [];
-
-    for (const message of messages) {
-      const rule = matchRule(message);
-      if (!rule) {
-        results.push({
-          messageId: message.id,
-          subject: message.subject,
-          action: null,
-          status: "no_match",
-        });
-        continue;
-      }
-
-      try {
-        await this.callStripeTool(rule.operationId, rule.parameters);
-        results.push({
-          messageId: message.id,
-          subject: message.subject,
-          action: rule.operationId,
-          status: "matched",
-        });
-      } catch (err) {
-        results.push({
-          messageId: message.id,
-          subject: message.subject,
-          action: rule.operationId,
-          status: "error",
-          detail: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    this.setState({ lastRunAt: new Date().toISOString(), lastRunResults: results });
-    return results;
-  }
-
-  private async callStripeTool(operationId: string, parameters: Record<string, unknown>) {
-    if (!this.stripeServerId) {
-      throw new Error("Stripe MCP server is not connected");
-    }
-    const connection = this.mcp.mcpConnections[this.stripeServerId];
-    if (!connection) {
-      throw new Error("Stripe MCP connection missing");
-    }
-
-    return connection.client.callTool({
-      name: "stripe_api_write",
-      arguments: { stripe_api_operation_id: operationId, parameters },
+    await this.addMcpServer("stripe", STRIPE_MCP_URL, "https://unused.invalid", undefined, {
+      transport: {
+        headers: { Authorization: `Bearer ${this.env.STRIPE_API_KEY}` },
+      },
     });
+  }
+
+  async run(): Promise<RunResult> {
+    const anthropic = createAnthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+
+    const tools = {
+      search_gmail: tool({
+        description: `Search the Gmail inbox for messages under the "${this.env.GMAIL_LABEL}" label. Returns each message's id, sender, subject, snippet, and received timestamp.`,
+        inputSchema: z.object({}),
+        execute: async () => searchGmail(this.env),
+      }),
+      ...this.mcp.getAITools(),
+    };
+
+    const { text, toolCalls, toolResults } = await generateText({
+      model: anthropic("claude-sonnet-5"),
+      system: skillPrompt,
+      prompt: "Check the inbox and handle any refund-worthy emails now.",
+      tools,
+      stopWhen: stepCountIs(8),
+    });
+
+    const outputByCallId = new Map(toolResults.map((result) => [result.toolCallId, result.output]));
+    const loggedToolCalls: ToolCallLog[] = toolCalls.map((call) => ({
+      tool: call.toolName,
+      input: call.input,
+      output: outputByCallId.get(call.toolCallId),
+    }));
+
+    const result: RunResult = { summary: text, toolCalls: loggedToolCalls };
+    this.setState({ lastRunAt: new Date().toISOString(), lastRunResult: result });
+    return result;
   }
 }
