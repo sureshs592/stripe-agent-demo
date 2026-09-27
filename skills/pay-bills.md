@@ -20,14 +20,20 @@ processed, and search/pay recipients in Stripe.
    - Proceed only if you find an existing recipient. If no matching
      recipient exists, skip the message and leave it unprocessed — never
      create a new recipient.
-4. If a matching recipient is found, send the extracted bill amount to
-   that recipient using the Stripe tools.
-5. Only after the payment succeeds, mark the message's thread as
+4. If a matching recipient is found, mark the message's thread as
    processed using the mark-thread-processed tool, keyed by the
-   message's `threadId`. Do not mark a thread processed if you skipped
-   it or the payment failed.
+   message's `threadId`, *before* sending money. Do this immediately
+   before the send-money call, and only once you're actually about to
+   send — not earlier in your reasoning. The send-money call blocks on
+   a human approval that happens asynchronously, outside this run, so
+   the thread must already be marked processed before that call is
+   made; otherwise the same bill could be picked up and paid again on
+   the next run while the first payment is still awaiting approval.
+5. Immediately after marking the thread processed, send the extracted
+   bill amount to that recipient using the Stripe tools.
 6. When you finish, summarize what happened for every message you looked
-   at: skipped (and why) or paid (recipient and amount).
+   at: skipped (and why) or payment initiated (recipient and amount,
+   noting it may still be pending approval).
 
 ## Constraints
 
@@ -35,4 +41,5 @@ processed, and search/pay recipients in Stripe.
   what you found in the email or looked up via the Stripe tools.
 - Never create a new Stripe recipient; only pay recipients that already
   exist.
-- Only mark a thread processed once you've actually paid it.
+- Never mark a thread processed unless you are about to send money for
+  it in the same step; never mark a thread processed if you skipped it.
