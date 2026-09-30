@@ -50,20 +50,26 @@ export class EmailStripeAgent extends Agent<Env, State> {
       const ids = Object.entries(servers)
         .filter(([, server]) => server.name === STRIPE_MCP_NAME)
         .map(([id]) => id);
+      const states = ids.map((id) => servers[id].state);
       return {
-        state: ids.map((id) => servers[id].state).join(",") || "not-registered",
+        state: states.join(",") || "not-registered",
+        // "ready" means discovery finished; "connected" alone can precede it,
+        // and getAITools() warns about any connection not yet "ready".
+        allReady: states.length > 0 && states.every((s) => s === "ready"),
         tools: tools.filter((t) => ids.includes(t.serverId)).map((t) => t.name),
       };
     };
 
+    const isReady = (s: ReturnType<typeof snapshot>) => s.allReady && s.tools.length > 0;
+
     const deadline = Date.now() + MCP_READY_TIMEOUT_MS;
     let current = snapshot();
-    while (current.tools.length === 0 && Date.now() < deadline) {
+    while (!isReady(current) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, MCP_READY_POLL_MS));
       current = snapshot();
     }
 
-    const ready = current.tools.length > 0;
+    const ready = isReady(current);
     const log = { server: STRIPE_MCP_NAME, state: current.state, toolCount: current.tools.length, tools: current.tools };
     if (!ready) {
       console.error("Stripe MCP tools unavailable", JSON.stringify({ ...log, timeoutMs: MCP_READY_TIMEOUT_MS }));
