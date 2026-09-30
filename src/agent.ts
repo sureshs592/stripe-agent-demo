@@ -63,7 +63,7 @@ export class EmailStripeAgent extends Agent<Env, State> {
       system: skillPrompt,
       prompt: "Check the inbox and pay any bills that are ready to be paid now.",
       tools,
-      stopWhen: stepCountIs(8),
+      stopWhen: stepCountIs(20),
     });
 
     const outputByCallId = new Map(toolResults.map((result) => [result.toolCallId, result.output]));
