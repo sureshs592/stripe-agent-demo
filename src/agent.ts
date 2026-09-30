@@ -6,6 +6,9 @@ import { markThreadProcessed, searchGmail } from "./gmail";
 import skillPrompt from "../skills/pay-bills.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
+const STRIPE_MCP_NAME = "stripe";
+const MCP_READY_TIMEOUT_MS = 15_000;
+const MCP_READY_POLL_MS = 250;
 
 type ToolCallLog = {
   tool: string;
@@ -31,14 +34,46 @@ export class EmailStripeAgent extends Agent<Env, State> {
     // server is authenticated with an API key below, so this value is never
     // actually used, but addMcpServer requires it when called outside a
     // request context (e.g. RPC via getAgentByName, as /run does).
-    await this.addMcpServer("stripe", STRIPE_MCP_URL, "https://unused.invalid", undefined, {
+    await this.addMcpServer(STRIPE_MCP_NAME, STRIPE_MCP_URL, "https://unused.invalid", undefined, {
       transport: {
         headers: { Authorization: `Bearer ${this.env.STRIPE_API_KEY}` },
       },
     });
   }
 
+  // getAITools() is synchronous and returns whatever tools are cached, so an
+  // agent woken cold can see an empty Stripe toolset. Wait for discovery, and
+  // fail rather than run a money-moving flow without the Stripe tools.
+  private async requireStripeTools(): Promise<void> {
+    const snapshot = () => {
+      const { servers, tools } = this.getMcpServers();
+      const ids = Object.entries(servers)
+        .filter(([, server]) => server.name === STRIPE_MCP_NAME)
+        .map(([id]) => id);
+      return {
+        state: ids.map((id) => servers[id].state).join(",") || "not-registered",
+        tools: tools.filter((t) => ids.includes(t.serverId)).map((t) => t.name),
+      };
+    };
+
+    const deadline = Date.now() + MCP_READY_TIMEOUT_MS;
+    let current = snapshot();
+    while (current.tools.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, MCP_READY_POLL_MS));
+      current = snapshot();
+    }
+
+    const ready = current.tools.length > 0;
+    const log = { server: STRIPE_MCP_NAME, state: current.state, toolCount: current.tools.length, tools: current.tools };
+    if (!ready) {
+      console.error("Stripe MCP tools unavailable", JSON.stringify({ ...log, timeoutMs: MCP_READY_TIMEOUT_MS }));
+      throw new Error(`Stripe MCP tools not available after ${MCP_READY_TIMEOUT_MS}ms (state: ${current.state})`);
+    }
+    console.log("Stripe MCP tools available", JSON.stringify(log));
+  }
+
   async run(): Promise<RunResult> {
+    await this.requireStripeTools();
     const anthropic = createAnthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
 
     const tools = {
