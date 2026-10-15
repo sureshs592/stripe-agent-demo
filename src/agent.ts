@@ -9,6 +9,12 @@ const STRIPE_MCP_URL = "https://mcp.stripe.com";
 const STRIPE_MCP_NAME = "stripe";
 const MCP_READY_TIMEOUT_MS = 15_000;
 const MCP_READY_POLL_MS = 250;
+const STRIPE_KEY_FINGERPRINT = "stripe_key_fingerprint";
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 type ToolCallLog = {
   tool: string;
@@ -49,38 +55,60 @@ function withToolLogging<T extends Record<string, any>>(prefix: string, tools: T
 export class EmailStripeAgent extends Agent<Env, State> {
   initialState: State = { lastRunAt: null, lastRunResult: null };
 
+  // The SDK persists MCP registrations in this Durable Object's SQLite and, on
+  // every wake, restores them and reconnects in the background *before* this
+  // runs. addMcpServer is not idempotent (new id + new row each call), so we
+  // only call it when there's nothing reusable. A restored connection reuses
+  // the Authorization header saved with it, so we also store a hash of the API
+  // key it was created with and re-register when the env key no longer matches.
   async onStart() {
+    const fingerprint = await sha256Hex(this.env.STRIPE_API_KEY);
+    const keyChanged = (await this.ctx.storage.get<string>(STRIPE_KEY_FINGERPRINT)) !== fingerprint;
+
+    const registered = Object.entries(this.getMcpServers().servers).filter(
+      ([, server]) => server.name === STRIPE_MCP_NAME,
+    );
+    // Keep at most one: the first that isn't stuck waiting on OAuth. Drop it
+    // too if the key changed.
+    const reusable = keyChanged ? undefined : registered.find(([, server]) => server.state !== "authenticating");
+    for (const [id] of registered) {
+      if (id !== reusable?.[0]) await this.removeMcpServer(id);
+    }
+    if (reusable) return;
+
     // callbackHost is only used to build an OAuth redirect URI; Stripe's MCP
-    // server is authenticated with an API key below, so this value is never
-    // actually used, but addMcpServer requires it when called outside a
-    // request context (e.g. RPC via getAgentByName, as /run does).
-    await this.addMcpServer(STRIPE_MCP_NAME, STRIPE_MCP_URL, "https://unused.invalid", undefined, {
+    // server is authenticated with an API key, so it is never actually used,
+    // but addMcpServer requires it outside a request context (e.g. RPC via
+    // getAgentByName). This call connects and discovers tools before returning.
+    const result = await this.addMcpServer(STRIPE_MCP_NAME, STRIPE_MCP_URL, "https://unused.invalid", undefined, {
       transport: {
         headers: { Authorization: `Bearer ${this.env.STRIPE_API_KEY}` },
       },
     });
+    if (result.state === "authenticating") {
+      throw new Error("Stripe MCP requested OAuth; check that STRIPE_API_KEY is set and valid");
+    }
+    await this.ctx.storage.put(STRIPE_KEY_FINGERPRINT, fingerprint);
   }
 
-  // getAITools() is synchronous and returns whatever tools are cached, so an
-  // agent woken cold can see an empty Stripe toolset. Wait for discovery, and
-  // fail rather than run a money-moving flow without the Stripe tools.
+  // A reused (restored) connection reconnects in the background after wake, and
+  // getAITools() is synchronous and returns only what's cached, so wait for the
+  // Stripe server to be "ready" with tools, and fail rather than run a
+  // money-moving flow without them.
   private async requireStripeTools(): Promise<void> {
     const snapshot = () => {
       const { servers, tools } = this.getMcpServers();
-      const ids = Object.entries(servers)
-        .filter(([, server]) => server.name === STRIPE_MCP_NAME)
-        .map(([id]) => id);
+      const ids = Object.keys(servers).filter((id) => servers[id].name === STRIPE_MCP_NAME);
       const states = ids.map((id) => servers[id].state);
       return {
         state: states.join(",") || "not-registered",
-        // "ready" means discovery finished; "connected" alone can precede it,
-        // and getAITools() warns about any connection not yet "ready".
-        allReady: states.length > 0 && states.every((s) => s === "ready"),
+        // "ready" means discovery finished; "connected" alone can precede it.
+        ready: states.length === 1 && states[0] === "ready",
         tools: tools.filter((t) => ids.includes(t.serverId)).map((t) => t.name),
       };
     };
 
-    const isReady = (s: ReturnType<typeof snapshot>) => s.allReady && s.tools.length > 0;
+    const isReady = (s: ReturnType<typeof snapshot>) => s.ready && s.tools.length > 0;
 
     const deadline = Date.now() + MCP_READY_TIMEOUT_MS;
     let current = snapshot();
@@ -89,9 +117,8 @@ export class EmailStripeAgent extends Agent<Env, State> {
       current = snapshot();
     }
 
-    const ready = isReady(current);
     const log = { server: STRIPE_MCP_NAME, state: current.state, toolCount: current.tools.length, tools: current.tools };
-    if (!ready) {
+    if (!isReady(current)) {
       console.error("Stripe MCP tools unavailable", JSON.stringify({ ...log, timeoutMs: MCP_READY_TIMEOUT_MS }));
       throw new Error(`Stripe MCP tools not available after ${MCP_READY_TIMEOUT_MS}ms (state: ${current.state})`);
     }
