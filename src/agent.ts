@@ -36,6 +36,14 @@ export class EmailStripeAgent extends Agent<Env, State> {
   // It is re-read on every use, so edits apply without a restart or redeploy.
   private ensureConfigTable() {
     this.sql`CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
+    // Polling starts disabled; flip to 'true' (Data Studio) to enable the cron poll.
+    this.sql`INSERT OR IGNORE INTO app_config (key, value) VALUES ('polling_enabled', 'false')`;
+  }
+
+  async isPollingEnabled(): Promise<boolean> {
+    this.ensureConfigTable();
+    const [row] = this.sql<{ value: string }>`SELECT value FROM app_config WHERE key = 'polling_enabled'`;
+    return row?.value.trim().toLowerCase() === "true";
   }
 
   private getRefreshToken(): string {

@@ -12,7 +12,7 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["EmailStripeAgent"] }
   ],
-  "triggers": { "crons": ["*/5 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "queues": {
     "producers": [{ "binding": "THREAD_QUEUE", "queue": "bill-threads" }],
     "consumers": [
