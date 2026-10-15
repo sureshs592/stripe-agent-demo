@@ -142,6 +142,15 @@ export default {
       return new Response("OK");
     }
 
+    if (url.pathname === "/processed-threads") {
+      if (request.method === "GET") {
+        return Response.json(await getStore(env).listThreads());
+      }
+      if (request.method === "DELETE") {
+        return Response.json({ deleted: await getStore(env).clearThreads() });
+      }
+    }
+
     if (isRun) {
       // Manual trigger for the same poll the cron runs.
       return Response.json({ enqueued: await pollAndEnqueue(env) });

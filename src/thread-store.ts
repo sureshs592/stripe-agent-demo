@@ -56,6 +56,18 @@ export class ThreadStore extends DurableObject<Env> {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
   }
 
+  async listThreads(): Promise<{ thread_id: string; state: ThreadState; updated_at: string }[]> {
+    this.ensureThreadsTable();
+    return this.sql<{ thread_id: string; state: ThreadState; updated_at: string }>`SELECT thread_id, state, updated_at FROM threads ORDER BY updated_at DESC`;
+  }
+
+  // Returns the number of rows removed.
+  async clearThreads(): Promise<number> {
+    this.ensureThreadsTable();
+    const cursor = this.ctx.storage.sql.exec("DELETE FROM threads");
+    return cursor.rowsWritten;
+  }
+
   // Polls Gmail for labeled threads and records any not yet seen as "enqueued".
   // Returns only the newly inserted thread IDs; the caller is responsible for
   // putting them on the queue (and calling releaseThreads if that fails).
