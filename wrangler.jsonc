@@ -32,6 +32,6 @@
     }
   },
   "vars": {
-    "GMAIL_LABEL": "billpay"
+    "GMAIL_LABEL": "invoices"
   }
 }

@@ -5,7 +5,7 @@ GOOGLE_CLIENT_ID=...apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=...
 
 # creates/applies the "processed" label on threads.
-# Exact Gmail label to filter on, e.g. "billpay"
+# Exact Gmail label to filter on, e.g. "invoices"
 GMAIL_LABEL=...
 
 # Anthropic API key used to run the skill (drives Gmail + Stripe tool calls)
