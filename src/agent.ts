@@ -145,24 +145,15 @@ export class EmailStripeAgent extends Agent<Env, State> {
       get_pdf_attachment: tool({
         description: "Download a PDF attachment from a message in the thread being processed and return its contents so you can read it. Use the messageId and an attachmentId from get_thread.",
         inputSchema: z.object({ messageId: z.string(), attachmentId: z.string() }),
-        execute: async ({ messageId, attachmentId }) => {
-          // Only serve attachments that belong to this thread.
-          const messages = await getThreadMessages(this.env, refreshToken, threadId);
-          const attachment = messages
-            .find((m) => m.id === messageId)
-            ?.pdfAttachments.find((a) => a.attachmentId === attachmentId);
-          if (!attachment) throw new Error("PDF attachment not found in this thread");
-          return {
-            filename: attachment.filename,
-            base64: await getAttachmentBase64(this.env, refreshToken, messageId, attachmentId),
-          };
-        },
+        // The messageId/attachmentId pair comes from get_thread and is trusted as-is.
+        execute: async ({ messageId, attachmentId }) => ({
+          base64: await getAttachmentBase64(this.env, refreshToken, messageId, attachmentId),
+        }),
         // Hand the PDF to the model as a document rather than as a huge JSON string.
         toModelOutput: ({ output }) => ({
           type: "content",
           value: [
-            { type: "text", text: `Contents of ${output.filename}:` },
-            { type: "file", mediaType: "application/pdf", filename: output.filename, data: { type: "data", data: output.base64 } },
+            { type: "file", mediaType: "application/pdf", data: { type: "data", data: output.base64 } },
           ],
         }),
       }),

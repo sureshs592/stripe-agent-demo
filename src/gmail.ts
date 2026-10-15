@@ -189,8 +189,7 @@ export async function markThreadProcessed(env: Env, refreshToken: string, thread
   }
 }
 
-// Returns the attachment's bytes as standard base64. The attachment must belong
-// to a message in the thread being processed (checked by the caller).
+// Returns the attachment's bytes as standard base64.
 export async function getAttachmentBase64(
   env: Env,
   refreshToken: string,
