@@ -2,7 +2,7 @@ import { Agent } from "agents";
 import { generateText, stepCountIs, tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import { markThreadProcessed, searchGmail } from "./gmail";
+import { getThreadMessages, listLabeledThreadIds, markThreadProcessed } from "./gmail";
 import skillPrompt from "../skills/pay-bills.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
@@ -20,6 +20,8 @@ type RunResult = {
   summary: string;
   toolCalls: ToolCallLog[];
 };
+
+type ThreadState = "enqueued" | "in_progress" | "processed" | "failed";
 
 type State = {
   lastRunAt: string | null;
@@ -45,16 +47,42 @@ export class EmailStripeAgent extends Agent<Env, State> {
     return row.value;
   }
 
-  private ensureProcessedThreadsTable() {
-    this.sql`CREATE TABLE IF NOT EXISTS processed_threads (
+  private ensureThreadsTable() {
+    this.sql`CREATE TABLE IF NOT EXISTS threads (
       thread_id TEXT PRIMARY KEY,
-      processed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      state TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     )`;
   }
 
-  private recordProcessedThread(threadId: string) {
-    this.ensureProcessedThreadsTable();
-    this.sql`INSERT OR IGNORE INTO processed_threads (thread_id) VALUES (${threadId})`;
+  private setThreadState(threadId: string, state: ThreadState) {
+    this.ensureThreadsTable();
+    this.sql`UPDATE threads SET state = ${state}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE thread_id = ${threadId}`;
+  }
+
+  // Polls Gmail for labeled threads and records any not yet seen as "enqueued".
+  // Returns only the newly inserted thread IDs; the caller is responsible for
+  // putting them on the queue (and calling releaseThreads if that fails).
+  async discoverNewThreads(): Promise<string[]> {
+    this.ensureThreadsTable();
+    const threadIds = await listLabeledThreadIds(this.env, this.getRefreshToken(), 20);
+    const fresh: string[] = [];
+    for (const threadId of threadIds) {
+      const [existing] = this.sql<{ thread_id: string }>`SELECT thread_id FROM threads WHERE thread_id = ${threadId}`;
+      if (existing) continue;
+      this.sql`INSERT INTO threads (thread_id, state) VALUES (${threadId}, 'enqueued')`;
+      fresh.push(threadId);
+    }
+    return fresh;
+  }
+
+  // Undo discoverNewThreads for threads that never made it onto the queue, so
+  // the next poll picks them up again.
+  async releaseThreads(threadIds: string[]): Promise<void> {
+    this.ensureThreadsTable();
+    for (const threadId of threadIds) {
+      this.sql`DELETE FROM threads WHERE thread_id = ${threadId} AND state = 'enqueued'`;
+    }
   }
 
   async setRefreshToken(token: string): Promise<void> {
@@ -112,22 +140,43 @@ export class EmailStripeAgent extends Agent<Env, State> {
     console.log("Stripe MCP tools available", JSON.stringify(log));
   }
 
-  async run(): Promise<RunResult> {
+  // Queue consumer entry point. Only an "enqueued" thread is picked up: queue
+  // delivery is at-least-once, and re-running a thread that is already
+  // in_progress (or done) could pay a bill twice.
+  async processThread(threadId: string): Promise<RunResult | null> {
+    this.ensureThreadsTable();
+    const [row] = this.sql<{ state: ThreadState }>`SELECT state FROM threads WHERE thread_id = ${threadId}`;
+    if (row?.state !== "enqueued") {
+      console.warn("Skipping thread not in enqueued state", JSON.stringify({ threadId, state: row?.state ?? "unknown" }));
+      return null;
+    }
+
+    this.setThreadState(threadId, "in_progress");
+    try {
+      const result = await this.runAgent(threadId);
+      this.setThreadState(threadId, "processed");
+      return result;
+    } catch (error) {
+      this.setThreadState(threadId, "failed");
+      throw error;
+    }
+  }
+
+  private async runAgent(threadId: string): Promise<RunResult> {
     await this.requireStripeTools();
     const anthropic = createAnthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
 
     const tools = {
-      search_gmail: tool({
-        description: `Search the Gmail inbox for messages under the "${this.env.GMAIL_LABEL}" label. Returns each message's id, threadId, sender, subject, snippet, body, and received timestamp.`,
+      get_thread: tool({
+        description: "Fetch the messages in the email thread being processed. Returns each message's id, threadId, sender, subject, snippet, body, and received timestamp.",
         inputSchema: z.object({}),
-        execute: async () => searchGmail(this.env, this.getRefreshToken()),
+        execute: async () => getThreadMessages(this.env, this.getRefreshToken(), threadId),
       }),
       mark_thread_processed: tool({
         description: "Apply the \"processed\" Gmail label to a thread once its bill has been paid, so it won't be picked up on the next run.",
         inputSchema: z.object({ threadId: z.string() }),
         execute: async ({ threadId }) => {
           await markThreadProcessed(this.env, this.getRefreshToken(), threadId);
-          this.recordProcessedThread(threadId);
           return { threadId, processed: true };
         },
       }),
@@ -137,7 +186,7 @@ export class EmailStripeAgent extends Agent<Env, State> {
     const { text, toolCalls, toolResults } = await generateText({
       model: anthropic("claude-sonnet-5"),
       system: skillPrompt,
-      prompt: "Check the inbox and pay any bills that are ready to be paid now.",
+      prompt: `Process the email thread ${threadId} and pay any bills in it that are ready to be paid now.`,
       tools,
       stopWhen: stepCountIs(20),
     });

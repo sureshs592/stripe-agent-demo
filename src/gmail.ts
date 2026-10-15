@@ -33,7 +33,7 @@ async function getAccessToken(env: Env, refreshToken: string): Promise<string> {
 }
 
 type GmailListResponse = {
-  messages?: { id: string }[];
+  messages?: { id: string; threadId: string }[];
 };
 
 type GmailMessagePart = {
@@ -110,42 +110,47 @@ function extractPlainTextBody(part: GmailMessagePart): string {
   return "";
 }
 
-export async function searchGmail(env: Env, refreshToken: string): Promise<GmailMessage[]> {
+function toGmailMessage(message: GmailMessageResource): GmailMessage {
+  return {
+    id: message.id,
+    threadId: message.threadId,
+    from: headerValue(message, "From"),
+    subject: headerValue(message, "Subject"),
+    snippet: message.snippet,
+    body: extractPlainTextBody(message.payload),
+    receivedAt: new Date(Number(message.internalDate)).toISOString(),
+  };
+}
+
+// Returns the distinct thread IDs of up to `maxResults` unprocessed messages
+// under the configured label.
+export async function listLabeledThreadIds(env: Env, refreshToken: string, maxResults = 20): Promise<string[]> {
   const accessToken = await getAccessToken(env, refreshToken);
-  const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
   const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
   listUrl.searchParams.set("q", `label:${env.GMAIL_LABEL} -label:${PROCESSED_LABEL_NAME}`);
-  listUrl.searchParams.set("maxResults", "20");
+  listUrl.searchParams.set("maxResults", String(maxResults));
 
-  const listResponse = await fetch(listUrl, { headers: authHeaders });
+  const listResponse = await fetch(listUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!listResponse.ok) {
     throw new Error(`Gmail list failed: ${listResponse.status} ${await listResponse.text()}`);
   }
   const { messages = [] } = (await listResponse.json()) as GmailListResponse;
+  return [...new Set(messages.map((m) => m.threadId))];
+}
 
-  return Promise.all(
-    messages.map(async ({ id }) => {
-      const messageUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
-      messageUrl.searchParams.set("format", "full");
+export async function getThreadMessages(env: Env, refreshToken: string, threadId: string): Promise<GmailMessage[]> {
+  const accessToken = await getAccessToken(env, refreshToken);
 
-      const messageResponse = await fetch(messageUrl, { headers: authHeaders });
-      if (!messageResponse.ok) {
-        throw new Error(`Gmail get message ${id} failed: ${messageResponse.status} ${await messageResponse.text()}`);
-      }
-      const message = (await messageResponse.json()) as GmailMessageResource;
+  const threadUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`);
+  threadUrl.searchParams.set("format", "full");
 
-      return {
-        id: message.id,
-        threadId: message.threadId,
-        from: headerValue(message, "From"),
-        subject: headerValue(message, "Subject"),
-        snippet: message.snippet,
-        body: extractPlainTextBody(message.payload),
-        receivedAt: new Date(Number(message.internalDate)).toISOString(),
-      };
-    })
-  );
+  const response = await fetch(threadUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!response.ok) {
+    throw new Error(`Gmail get thread ${threadId} failed: ${response.status} ${await response.text()}`);
+  }
+  const { messages = [] } = (await response.json()) as { messages?: GmailMessageResource[] };
+  return messages.map(toGmailMessage);
 }
 
 export async function markThreadProcessed(env: Env, refreshToken: string, threadId: string): Promise<void> {

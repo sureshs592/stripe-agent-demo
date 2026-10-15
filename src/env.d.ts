@@ -8,6 +8,7 @@ declare global {
     ANTHROPIC_API_KEY: string;
     RUN_AUTH_USERNAME: string;
     RUN_AUTH_PASSWORD: string;
+    THREAD_QUEUE: Queue<{ threadId: string }>;
   }
 }
 

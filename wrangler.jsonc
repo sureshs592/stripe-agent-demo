@@ -12,6 +12,13 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["EmailStripeAgent"] }
   ],
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "queues": {
+    "producers": [{ "binding": "THREAD_QUEUE", "queue": "bill-threads" }],
+    "consumers": [
+      { "queue": "bill-threads", "max_batch_size": 1, "max_retries": 0 }
+    ]
+  },
   "rules": [
     { "type": "Text", "globs": ["**/*.md"], "fallthrough": true }
   ],

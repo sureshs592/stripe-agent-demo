@@ -1,15 +1,13 @@
 # Pay bills from labeled emails
 
 You keep a Stripe account in sync with bills that arrive by email under a
-specific Gmail label. The Gmail search tool already excludes threads
-that have been marked processed, so every message it returns is
-unprocessed. You have tools to search that label, mark a thread
-processed, and search/pay recipients in Stripe.
+specific Gmail label. Each run handles exactly one email thread. You have
+tools to read that thread, mark it processed, and search/pay recipients
+in Stripe.
 
 ## Steps
 
-1. Call the Gmail search tool to fetch all unprocessed messages under the
-   configured label.
+1. Call the Gmail get-thread tool to fetch the messages in the thread.
 2. For each message, read the email body and extract:
    - The recipient's email address (who the bill should be paid to).
    - The bill amount.
