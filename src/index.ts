@@ -40,13 +40,25 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/run" && request.method === "POST") {
-      if (!isAuthorized(request, env)) {
-        return new Response("Unauthorized", {
-          status: 401,
-          headers: { "WWW-Authenticate": 'Basic realm="stripe-agent-demo"' },
-        });
-      }
+    const isRun = url.pathname === "/run" && request.method === "POST";
+    const isSetToken = url.pathname === "/admin/google-refresh-token" && request.method === "PUT";
+
+    if ((isRun || isSetToken) && !isAuthorized(request, env)) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: { "WWW-Authenticate": 'Basic realm="stripe-agent-demo"' },
+      });
+    }
+
+    if (isSetToken) {
+      const token = (await request.text()).trim();
+      if (!token) return new Response("Empty body", { status: 400 });
+      const agent = await getAgentByName(env.EmailStripeAgent, "default");
+      await agent.setRefreshToken(token);
+      return new Response("OK");
+    }
+
+    if (isRun) {
 
       const agent = await getAgentByName(env.EmailStripeAgent, "default");
       const results = await agent.run();

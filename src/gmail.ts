@@ -12,14 +12,14 @@ type TokenResponse = {
   access_token: string;
 };
 
-async function getAccessToken(env: Env): Promise<string> {
+async function getAccessToken(env: Env, refreshToken: string): Promise<string> {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: env.GOOGLE_CLIENT_ID,
       client_secret: env.GOOGLE_CLIENT_SECRET,
-      refresh_token: env.GOOGLE_REFRESH_TOKEN,
+      refresh_token: refreshToken,
       grant_type: "refresh_token",
     }),
   });
@@ -110,8 +110,8 @@ function extractPlainTextBody(part: GmailMessagePart): string {
   return "";
 }
 
-export async function searchGmail(env: Env): Promise<GmailMessage[]> {
-  const accessToken = await getAccessToken(env);
+export async function searchGmail(env: Env, refreshToken: string): Promise<GmailMessage[]> {
+  const accessToken = await getAccessToken(env, refreshToken);
   const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
   const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
@@ -148,8 +148,8 @@ export async function searchGmail(env: Env): Promise<GmailMessage[]> {
   );
 }
 
-export async function markThreadProcessed(env: Env, threadId: string): Promise<void> {
-  const accessToken = await getAccessToken(env);
+export async function markThreadProcessed(env: Env, refreshToken: string, threadId: string): Promise<void> {
+  const accessToken = await getAccessToken(env, refreshToken);
   const labelId = await getOrCreateLabelId(accessToken, PROCESSED_LABEL_NAME);
 
   const modifyResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}/modify`, {

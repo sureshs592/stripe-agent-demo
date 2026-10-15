@@ -29,6 +29,28 @@ type State = {
 export class EmailStripeAgent extends Agent<Env, State> {
   initialState: State = { lastRunAt: null, lastRunResult: null };
 
+  // The refresh token lives in the DO's SQLite storage so it can be edited
+  // out-of-band (dashboard Data Studio, or PUT /admin/google-refresh-token).
+  // It is re-read on every use, so edits apply without a restart or redeploy.
+  private ensureConfigTable() {
+    this.sql`CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
+  }
+
+  private getRefreshToken(): string {
+    this.ensureConfigTable();
+    const [row] = this.sql<{ value: string }>`SELECT value FROM app_config WHERE key = 'google_refresh_token'`;
+    if (!row?.value) {
+      throw new Error("Google refresh token not set in app_config (key: google_refresh_token)");
+    }
+    return row.value;
+  }
+
+  async setRefreshToken(token: string): Promise<void> {
+    this.ensureConfigTable();
+    this.sql`INSERT INTO app_config (key, value) VALUES ('google_refresh_token', ${token})
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
+  }
+
   async onStart() {
     // callbackHost is only used to build an OAuth redirect URI; Stripe's MCP
     // server is authenticated with an API key below, so this value is never
@@ -86,13 +108,13 @@ export class EmailStripeAgent extends Agent<Env, State> {
       search_gmail: tool({
         description: `Search the Gmail inbox for messages under the "${this.env.GMAIL_LABEL}" label. Returns each message's id, threadId, sender, subject, snippet, body, and received timestamp.`,
         inputSchema: z.object({}),
-        execute: async () => searchGmail(this.env),
+        execute: async () => searchGmail(this.env, this.getRefreshToken()),
       }),
       mark_thread_processed: tool({
         description: "Apply the \"processed\" Gmail label to a thread once its bill has been paid, so it won't be picked up on the next run.",
         inputSchema: z.object({ threadId: z.string() }),
         execute: async ({ threadId }) => {
-          await markThreadProcessed(this.env, threadId);
+          await markThreadProcessed(this.env, this.getRefreshToken(), threadId);
           return { threadId, processed: true };
         },
       }),
