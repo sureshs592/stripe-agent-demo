@@ -1,4 +1,4 @@
-import { routeAgentRequest, getAgentByName } from "agents";
+import { getAgentByName } from "agents";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { EmailStripeAgent } from "./agent";
 
@@ -102,7 +102,7 @@ export default {
     const isGetConfig = isAppConfig && request.method === "GET";
     const isSetConfig = isAppConfig && request.method === "PUT";
 
-    if ((isRun || isGetConfig || isSetConfig) && !isAuthorized(request, env)) {
+    if (!isAuthorized(request, env)) {
       return new Response("Unauthorized", {
         status: 401,
         headers: { "WWW-Authenticate": 'Basic realm="stripe-agent-demo"' },
@@ -143,7 +143,7 @@ export default {
       return Response.json({ enqueued: await pollAndEnqueue(env) });
     }
 
-    return (await routeAgentRequest(request, env)) ?? new Response("Not found", { status: 404 });
+    return new Response("Not found", { status: 404 });
   },
 
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
