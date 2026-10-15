@@ -26,6 +26,26 @@ type State = {
   lastRunResult: RunResult | null;
 };
 
+// Wraps each tool's execute so every call logs "<prefix>_<name>" and its input.
+function withToolLogging<T extends Record<string, any>>(prefix: string, tools: T): T {
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, t]) => {
+      if (typeof t.execute !== "function") return [name, t];
+      const execute = t.execute;
+      return [
+        name,
+        {
+          ...t,
+          execute: (input: unknown, options: unknown) => {
+            console.log(`[${prefix}] tool call: ${name}`, JSON.stringify(input));
+            return execute(input, options);
+          },
+        },
+      ];
+    }),
+  ) as T;
+}
+
 export class EmailStripeAgent extends Agent<Env, State> {
   initialState: State = { lastRunAt: null, lastRunResult: null };
 
@@ -89,7 +109,7 @@ export class EmailStripeAgent extends Agent<Env, State> {
     await this.requireStripeTools();
     const anthropic = createAnthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
 
-    const tools = {
+    const customTools = {
       get_thread: tool({
         description: "Fetch the messages in the email thread being processed. Returns each message's id, threadId, sender, subject, snippet, body, and received timestamp.",
         inputSchema: z.object({}),
@@ -103,14 +123,17 @@ export class EmailStripeAgent extends Agent<Env, State> {
           return { threadId, processed: true };
         },
       }),
-      ...this.mcp.getAITools(),
+    };
+    const loggedTools = {
+      ...withToolLogging("custom", customTools),
+      ...withToolLogging("stripe", this.mcp.getAITools()),
     };
 
     const { text, toolCalls, toolResults } = await generateText({
       model: anthropic("claude-sonnet-5"),
       system: skillPrompt,
       prompt: `Process the email thread ${threadId} and pay any bills in it that are ready to be paid now.`,
-      tools,
+      tools: loggedTools,
       stopWhen: stepCountIs(20),
     });
 
