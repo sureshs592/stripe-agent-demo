@@ -45,6 +45,18 @@ export class EmailStripeAgent extends Agent<Env, State> {
     return row.value;
   }
 
+  private ensureProcessedThreadsTable() {
+    this.sql`CREATE TABLE IF NOT EXISTS processed_threads (
+      thread_id TEXT PRIMARY KEY,
+      processed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )`;
+  }
+
+  private recordProcessedThread(threadId: string) {
+    this.ensureProcessedThreadsTable();
+    this.sql`INSERT OR IGNORE INTO processed_threads (thread_id) VALUES (${threadId})`;
+  }
+
   async setRefreshToken(token: string): Promise<void> {
     this.ensureConfigTable();
     this.sql`INSERT INTO app_config (key, value) VALUES ('google_refresh_token', ${token})
@@ -115,6 +127,7 @@ export class EmailStripeAgent extends Agent<Env, State> {
         inputSchema: z.object({ threadId: z.string() }),
         execute: async ({ threadId }) => {
           await markThreadProcessed(this.env, this.getRefreshToken(), threadId);
+          this.recordProcessedThread(threadId);
           return { threadId, processed: true };
         },
       }),
