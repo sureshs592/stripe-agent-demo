@@ -50,7 +50,6 @@ const SECRET_CONFIG_KEYS = ["google_refresh_token"];
 
 // Poll Gmail, record unseen threads as "enqueued", and put them on the queue.
 async function pollAndEnqueue(env: Env): Promise<string[]> {
-  console.log("Poll started");
   const store = getStore(env);
   const threadIds = await store.discoverNewThreads();
   if (threadIds.length > 0) {
@@ -62,7 +61,6 @@ async function pollAndEnqueue(env: Env): Promise<string[]> {
       throw error;
     }
   }
-  console.log("Poll finished", JSON.stringify({ enqueued: threadIds.length, threadIds }));
   return threadIds;
 }
 
