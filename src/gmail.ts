@@ -6,6 +6,12 @@ export type GmailMessage = {
   snippet: string;
   body: string;
   receivedAt: string;
+  pdfAttachments: GmailPdfAttachment[];
+};
+
+export type GmailPdfAttachment = {
+  attachmentId: string;
+  filename: string;
 };
 
 type TokenResponse = {
@@ -38,7 +44,8 @@ type GmailListResponse = {
 
 type GmailMessagePart = {
   mimeType: string;
-  body?: { data?: string };
+  filename?: string;
+  body?: { data?: string; attachmentId?: string };
   parts?: GmailMessagePart[];
 };
 
@@ -110,6 +117,20 @@ function extractPlainTextBody(part: GmailMessagePart): string {
   return "";
 }
 
+function isPdfPart(part: GmailMessagePart): boolean {
+  return (
+    !!part.body?.attachmentId &&
+    (part.mimeType === "application/pdf" || (part.filename ?? "").toLowerCase().endsWith(".pdf"))
+  );
+}
+
+function collectPdfAttachments(part: GmailMessagePart): GmailPdfAttachment[] {
+  const own = isPdfPart(part)
+    ? [{ attachmentId: part.body!.attachmentId!, filename: part.filename || "attachment.pdf" }]
+    : [];
+  return [...own, ...(part.parts ?? []).flatMap(collectPdfAttachments)];
+}
+
 function toGmailMessage(message: GmailMessageResource): GmailMessage {
   return {
     id: message.id,
@@ -119,6 +140,7 @@ function toGmailMessage(message: GmailMessageResource): GmailMessage {
     snippet: message.snippet,
     body: extractPlainTextBody(message.payload),
     receivedAt: new Date(Number(message.internalDate)).toISOString(),
+    pdfAttachments: collectPdfAttachments(message.payload),
   };
 }
 
@@ -165,4 +187,24 @@ export async function markThreadProcessed(env: Env, refreshToken: string, thread
   if (!modifyResponse.ok) {
     throw new Error(`Gmail thread modify failed: ${modifyResponse.status} ${await modifyResponse.text()}`);
   }
+}
+
+// Returns the attachment's bytes as standard base64. The attachment must belong
+// to a message in the thread being processed (checked by the caller).
+export async function getAttachmentBase64(
+  env: Env,
+  refreshToken: string,
+  messageId: string,
+  attachmentId: string,
+): Promise<string> {
+  const accessToken = await getAccessToken(env, refreshToken);
+  const response = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) {
+    throw new Error(`Gmail get attachment failed: ${response.status} ${await response.text()}`);
+  }
+  const { data } = (await response.json()) as { data: string };
+  return data.replace(/-/g, "+").replace(/_/g, "/");
 }

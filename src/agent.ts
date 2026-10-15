@@ -2,7 +2,7 @@ import { Agent } from "agents";
 import { generateText, stepCountIs, tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import { getThreadMessages, markThreadProcessed } from "./gmail";
+import { getAttachmentBase64, getThreadMessages, markThreadProcessed } from "./gmail";
 import skillPrompt from "../skills/pay-bills.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
@@ -138,9 +138,33 @@ export class EmailStripeAgent extends Agent<Env, State> {
 
     const customTools = {
       get_thread: tool({
-        description: "Fetch the messages in the email thread being processed. Returns each message's id, threadId, sender, subject, snippet, body, and received timestamp.",
+        description: "Fetch the messages in the email thread being processed. Returns each message's id, threadId, sender, subject, snippet, body, received timestamp, and a list of PDF attachments (attachmentId, filename).",
         inputSchema: z.object({}),
         execute: async () => getThreadMessages(this.env, refreshToken, threadId),
+      }),
+      get_pdf_attachment: tool({
+        description: "Download a PDF attachment from a message in the thread being processed and return its contents so you can read it. Use the messageId and an attachmentId from get_thread.",
+        inputSchema: z.object({ messageId: z.string(), attachmentId: z.string() }),
+        execute: async ({ messageId, attachmentId }) => {
+          // Only serve attachments that belong to this thread.
+          const messages = await getThreadMessages(this.env, refreshToken, threadId);
+          const attachment = messages
+            .find((m) => m.id === messageId)
+            ?.pdfAttachments.find((a) => a.attachmentId === attachmentId);
+          if (!attachment) throw new Error("PDF attachment not found in this thread");
+          return {
+            filename: attachment.filename,
+            base64: await getAttachmentBase64(this.env, refreshToken, messageId, attachmentId),
+          };
+        },
+        // Hand the PDF to the model as a document rather than as a huge JSON string.
+        toModelOutput: ({ output }) => ({
+          type: "content",
+          value: [
+            { type: "text", text: `Contents of ${output.filename}:` },
+            { type: "file", mediaType: "application/pdf", filename: output.filename, data: { type: "data", data: output.base64 } },
+          ],
+        }),
       }),
       mark_thread_processed: tool({
         description: "Apply the \"processed\" Gmail label to a thread once its bill has been paid, so it won't be picked up on the next run.",
