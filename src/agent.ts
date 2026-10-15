@@ -2,7 +2,7 @@ import { Agent } from "agents";
 import { generateText, stepCountIs, tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import { getThreadMessages, listLabeledThreadIds, markThreadProcessed } from "./gmail";
+import { getThreadMessages, markThreadProcessed } from "./gmail";
 import skillPrompt from "../skills/pay-bills.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
@@ -21,8 +21,6 @@ type RunResult = {
   toolCalls: ToolCallLog[];
 };
 
-type ThreadState = "enqueued" | "in_progress" | "processed" | "failed";
-
 type State = {
   lastRunAt: string | null;
   lastRunResult: RunResult | null;
@@ -30,80 +28,6 @@ type State = {
 
 export class EmailStripeAgent extends Agent<Env, State> {
   initialState: State = { lastRunAt: null, lastRunResult: null };
-
-  // Config (refresh token, polling flag) lives in the DO's SQLite storage so it
-  // can be edited out-of-band (dashboard Data Studio, or PUT /app-config).
-  // It is re-read on every use, so edits apply without a restart or redeploy.
-  private ensureConfigTable() {
-    this.sql`CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
-    // Polling starts disabled; flip to 'true' (Data Studio) to enable the cron poll.
-    this.sql`INSERT OR IGNORE INTO app_config (key, value) VALUES ('polling_enabled', 'false')`;
-  }
-
-  async isPollingEnabled(): Promise<boolean> {
-    this.ensureConfigTable();
-    const [row] = this.sql<{ value: string }>`SELECT value FROM app_config WHERE key = 'polling_enabled'`;
-    return row?.value.trim().toLowerCase() === "true";
-  }
-
-  private getRefreshToken(): string {
-    this.ensureConfigTable();
-    const [row] = this.sql<{ value: string }>`SELECT value FROM app_config WHERE key = 'google_refresh_token'`;
-    if (!row?.value) {
-      throw new Error("Google refresh token not set in app_config (key: google_refresh_token)");
-    }
-    return row.value;
-  }
-
-  private ensureThreadsTable() {
-    this.sql`CREATE TABLE IF NOT EXISTS threads (
-      thread_id TEXT PRIMARY KEY,
-      state TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    )`;
-  }
-
-  private setThreadState(threadId: string, state: ThreadState) {
-    this.ensureThreadsTable();
-    this.sql`UPDATE threads SET state = ${state}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE thread_id = ${threadId}`;
-  }
-
-  // Polls Gmail for labeled threads and records any not yet seen as "enqueued".
-  // Returns only the newly inserted thread IDs; the caller is responsible for
-  // putting them on the queue (and calling releaseThreads if that fails).
-  async discoverNewThreads(): Promise<string[]> {
-    this.ensureThreadsTable();
-    const threadIds = await listLabeledThreadIds(this.env, this.getRefreshToken(), 20);
-    const fresh: string[] = [];
-    for (const threadId of threadIds) {
-      const [existing] = this.sql<{ thread_id: string }>`SELECT thread_id FROM threads WHERE thread_id = ${threadId}`;
-      if (existing) continue;
-      this.sql`INSERT INTO threads (thread_id, state) VALUES (${threadId}, 'enqueued')`;
-      fresh.push(threadId);
-    }
-    return fresh;
-  }
-
-  // Undo discoverNewThreads for threads that never made it onto the queue, so
-  // the next poll picks them up again.
-  async releaseThreads(threadIds: string[]): Promise<void> {
-    this.ensureThreadsTable();
-    for (const threadId of threadIds) {
-      this.sql`DELETE FROM threads WHERE thread_id = ${threadId} AND state = 'enqueued'`;
-    }
-  }
-
-  async getConfig(): Promise<Record<string, string>> {
-    this.ensureConfigTable();
-    const rows = this.sql<{ key: string; value: string }>`SELECT key, value FROM app_config ORDER BY key`;
-    return Object.fromEntries(rows.map((row) => [row.key, row.value]));
-  }
-
-  async setConfig(key: string, value: string): Promise<void> {
-    this.ensureConfigTable();
-    this.sql`INSERT INTO app_config (key, value) VALUES (${key}, ${value})
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
-  }
 
   async onStart() {
     // callbackHost is only used to build an OAuth redirect URI; Stripe's MCP
@@ -154,29 +78,14 @@ export class EmailStripeAgent extends Agent<Env, State> {
     console.log("Stripe MCP tools available", JSON.stringify(log));
   }
 
-  // Queue consumer entry point. Only an "enqueued" thread is picked up: queue
-  // delivery is at-least-once, and re-running a thread that is already
-  // in_progress (or done) could pay a bill twice.
-  async processThread(threadId: string): Promise<RunResult | null> {
-    this.ensureThreadsTable();
-    const [row] = this.sql<{ state: ThreadState }>`SELECT state FROM threads WHERE thread_id = ${threadId}`;
-    if (row?.state !== "enqueued") {
-      console.warn("Skipping thread not in enqueued state", JSON.stringify({ threadId, state: row?.state ?? "unknown" }));
-      return null;
-    }
-
-    this.setThreadState(threadId, "in_progress");
-    try {
-      const result = await this.runAgent(threadId);
-      this.setThreadState(threadId, "processed");
-      return result;
-    } catch (error) {
-      this.setThreadState(threadId, "failed");
-      throw error;
-    }
+  // Queue consumer entry point. The caller (see index.ts) has already claimed
+  // the thread via ThreadStore and supplies the Gmail refresh token, so this
+  // class only runs the agentic piece.
+  async processThread(threadId: string, refreshToken: string): Promise<RunResult> {
+    return this.runAgent(threadId, refreshToken);
   }
 
-  private async runAgent(threadId: string): Promise<RunResult> {
+  private async runAgent(threadId: string, refreshToken: string): Promise<RunResult> {
     await this.requireStripeTools();
     const anthropic = createAnthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
 
@@ -184,13 +93,13 @@ export class EmailStripeAgent extends Agent<Env, State> {
       get_thread: tool({
         description: "Fetch the messages in the email thread being processed. Returns each message's id, threadId, sender, subject, snippet, body, and received timestamp.",
         inputSchema: z.object({}),
-        execute: async () => getThreadMessages(this.env, this.getRefreshToken(), threadId),
+        execute: async () => getThreadMessages(this.env, refreshToken, threadId),
       }),
       mark_thread_processed: tool({
         description: "Apply the \"processed\" Gmail label to a thread once its bill has been paid, so it won't be picked up on the next run.",
         inputSchema: z.object({ threadId: z.string() }),
         execute: async ({ threadId }) => {
-          await markThreadProcessed(this.env, this.getRefreshToken(), threadId);
+          await markThreadProcessed(this.env, refreshToken, threadId);
           return { threadId, processed: true };
         },
       }),

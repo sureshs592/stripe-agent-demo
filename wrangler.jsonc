@@ -6,11 +6,13 @@
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
     "bindings": [
-      { "name": "EmailStripeAgent", "class_name": "EmailStripeAgent" }
+      { "name": "EmailStripeAgent", "class_name": "EmailStripeAgent" },
+      { "name": "ThreadStore", "class_name": "ThreadStore" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["EmailStripeAgent"] }
+    { "tag": "v1", "new_sqlite_classes": ["EmailStripeAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["ThreadStore"] }
   ],
   "triggers": { "crons": ["* * * * *"] },
   "queues": {

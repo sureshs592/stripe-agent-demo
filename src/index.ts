@@ -1,8 +1,9 @@
 import { getAgentByName } from "agents";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { EmailStripeAgent } from "./agent";
+import { ThreadStore } from "./thread-store";
 
-export { EmailStripeAgent };
+export { EmailStripeAgent, ThreadStore };
 
 type ThreadMessage = { threadId: string };
 
@@ -38,20 +39,25 @@ function isAuthorized(request: Request, env: Env): boolean {
   );
 }
 
+const STORE_NAME = "default";
 const AGENT_NAME = "default";
+
+function getStore(env: Env) {
+  return env.ThreadStore.get(env.ThreadStore.idFromName(STORE_NAME));
+}
 const CONFIG_KEYS = ["google_refresh_token", "polling_enabled"];
 const SECRET_CONFIG_KEYS = ["google_refresh_token"];
 
 // Poll Gmail, record unseen threads as "enqueued", and put them on the queue.
 async function pollAndEnqueue(env: Env): Promise<string[]> {
   console.log("Poll started");
-  const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
-  const threadIds = await agent.discoverNewThreads();
+  const store = getStore(env);
+  const threadIds = await store.discoverNewThreads();
   if (threadIds.length > 0) {
     try {
       await env.THREAD_QUEUE.sendBatch(threadIds.map((threadId) => ({ body: { threadId } })));
     } catch (error) {
-      await agent.releaseThreads(threadIds);
+      await store.releaseThreads(threadIds);
       console.error("Poll failed to enqueue threads", JSON.stringify({ threadIds }), error);
       throw error;
     }
@@ -70,12 +76,12 @@ const POLL_WINDOW_MS = 55_000;
 // Object (no awaits between its SELECT and INSERT), so a thread can't be
 // enqueued twice.
 async function scheduledPollLoop(env: Env): Promise<void> {
-  const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
+  const store = getStore(env);
   const startedAt = Date.now();
 
   for (let tick = 0; ; tick++) {
     // Re-checked every tick so flipping the flag stops the loop promptly.
-    if (!(await agent.isPollingEnabled())) {
+    if (!(await store.isPollingEnabled())) {
       console.log("Poll skipped: polling_enabled is not 'true' in app_config");
       return;
     }
@@ -110,8 +116,7 @@ export default {
     }
 
     if (isGetConfig) {
-      const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
-      const config = await agent.getConfig();
+      const config = await getStore(env).getConfig();
       // Never echo secrets back; just report that they're set.
       for (const key of SECRET_CONFIG_KEYS) {
         if (key in config) config[key] = "<set>";
@@ -133,8 +138,7 @@ export default {
       if (!CONFIG_KEYS.includes(key)) {
         return new Response(`Unknown key. Allowed: ${CONFIG_KEYS.join(", ")}`, { status: 400 });
       }
-      const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
-      await agent.setConfig(key, value.trim());
+      await getStore(env).setConfig(key, value.trim());
       return new Response("OK");
     }
 
@@ -154,12 +158,23 @@ export default {
   // re-running an agent that may already have initiated a payment is unsafe;
   // failures are recorded as state "failed" in the threads table.
   async queue(batch: MessageBatch<ThreadMessage>, env: Env) {
-    const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
+    const store = getStore(env);
     for (const message of batch.messages) {
+      const { threadId } = message.body;
       try {
-        await agent.processThread(message.body.threadId);
+        if (await store.claimThread(threadId)) {
+          // Only here is the agent (and its Stripe MCP connection) woken.
+          try {
+            const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
+            await agent.processThread(threadId, await store.getRefreshToken());
+            await store.finishThread(threadId, "processed");
+          } catch (error) {
+            await store.finishThread(threadId, "failed");
+            throw error;
+          }
+        }
       } catch (error) {
-        console.error("Thread processing failed", message.body.threadId, error);
+        console.error("Thread processing failed", threadId, error);
       }
       message.ack();
     }
