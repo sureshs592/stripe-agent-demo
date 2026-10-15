@@ -48,6 +48,11 @@ in Stripe.
    the next run while the first payment is still awaiting approval.
 5. Immediately after marking the thread processed, send the extracted
    bill amount to that recipient using the Stripe tools.
+   If Stripe returns an approval request for the payment, always include
+   a justification: a short explanation of why the payment is being made,
+   citing the bill's source (e.g. the PDF invoice or email), the
+   recipient, the amount, and the invoice number or description if
+   available. Never submit an approval request without a justification.
 6. When you finish, summarize what happened for every message you looked
    at: skipped (and why) or payment initiated (recipient and amount,
    noting it may still be pending approval).
@@ -60,5 +65,6 @@ in Stripe.
   the email body.
 - Never create a new Stripe recipient; only pay recipients that already
   exist.
+- Always add a justification whenever Stripe returns an approval request.
 - Never mark a thread processed unless you are about to send money for
   it in the same step; never mark a thread processed if you skipped it.
