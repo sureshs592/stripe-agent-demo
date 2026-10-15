@@ -166,6 +166,10 @@ export class EmailStripeAgent extends Agent<Env, State> {
         },
       }),
     };
+    // getAITools() needs the AI SDK's jsonSchema, which MCPClientManager only
+    // lazy-loads in connect(). A server restored from SQLite after a wake skips
+    // that path, so load it explicitly.
+    await this.mcp.ensureJsonSchema();
     const loggedTools = {
       ...withToolLogging("custom", customTools),
       ...withToolLogging("stripe", this.mcp.getAITools()),
