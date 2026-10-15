@@ -31,8 +31,8 @@ type State = {
 export class EmailStripeAgent extends Agent<Env, State> {
   initialState: State = { lastRunAt: null, lastRunResult: null };
 
-  // The refresh token lives in the DO's SQLite storage so it can be edited
-  // out-of-band (dashboard Data Studio, or PUT /admin/google-refresh-token).
+  // Config (refresh token, polling flag) lives in the DO's SQLite storage so it
+  // can be edited out-of-band (dashboard Data Studio, or PUT /app-config).
   // It is re-read on every use, so edits apply without a restart or redeploy.
   private ensureConfigTable() {
     this.sql`CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
@@ -93,9 +93,15 @@ export class EmailStripeAgent extends Agent<Env, State> {
     }
   }
 
-  async setRefreshToken(token: string): Promise<void> {
+  async getConfig(): Promise<Record<string, string>> {
     this.ensureConfigTable();
-    this.sql`INSERT INTO app_config (key, value) VALUES ('google_refresh_token', ${token})
+    const rows = this.sql<{ key: string; value: string }>`SELECT key, value FROM app_config ORDER BY key`;
+    return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  }
+
+  async setConfig(key: string, value: string): Promise<void> {
+    this.ensureConfigTable();
+    this.sql`INSERT INTO app_config (key, value) VALUES (${key}, ${value})
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
   }
 

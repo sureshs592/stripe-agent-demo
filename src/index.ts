@@ -39,6 +39,8 @@ function isAuthorized(request: Request, env: Env): boolean {
 }
 
 const AGENT_NAME = "default";
+const CONFIG_KEYS = ["google_refresh_token", "polling_enabled"];
+const SECRET_CONFIG_KEYS = ["google_refresh_token"];
 
 // Poll Gmail, record unseen threads as "enqueued", and put them on the queue.
 async function pollAndEnqueue(env: Env): Promise<string[]> {
@@ -96,20 +98,43 @@ export default {
     const url = new URL(request.url);
 
     const isRun = url.pathname === "/run" && request.method === "POST";
-    const isSetToken = url.pathname === "/admin/google-refresh-token" && request.method === "PUT";
+    const isAppConfig = url.pathname === "/app-config";
+    const isGetConfig = isAppConfig && request.method === "GET";
+    const isSetConfig = isAppConfig && request.method === "PUT";
 
-    if ((isRun || isSetToken) && !isAuthorized(request, env)) {
+    if ((isRun || isGetConfig || isSetConfig) && !isAuthorized(request, env)) {
       return new Response("Unauthorized", {
         status: 401,
         headers: { "WWW-Authenticate": 'Basic realm="stripe-agent-demo"' },
       });
     }
 
-    if (isSetToken) {
-      const token = (await request.text()).trim();
-      if (!token) return new Response("Empty body", { status: 400 });
+    if (isGetConfig) {
       const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
-      await agent.setRefreshToken(token);
+      const config = await agent.getConfig();
+      // Never echo secrets back; just report that they're set.
+      for (const key of SECRET_CONFIG_KEYS) {
+        if (key in config) config[key] = "<set>";
+      }
+      return Response.json(config);
+    }
+
+    if (isSetConfig) {
+      let body: { key?: unknown; value?: unknown };
+      try {
+        body = await request.json();
+      } catch {
+        return new Response('Body must be JSON: {"key": "...", "value": "..."}', { status: 400 });
+      }
+      const { key, value } = body;
+      if (typeof key !== "string" || typeof value !== "string" || !value.trim()) {
+        return new Response("key and value must be non-empty strings", { status: 400 });
+      }
+      if (!CONFIG_KEYS.includes(key)) {
+        return new Response(`Unknown key. Allowed: ${CONFIG_KEYS.join(", ")}`, { status: 400 });
+      }
+      const agent = await getAgentByName(env.EmailStripeAgent, AGENT_NAME);
+      await agent.setConfig(key, value.trim());
       return new Response("OK");
     }
 
