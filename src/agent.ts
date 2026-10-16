@@ -171,7 +171,7 @@ export class EmailStripeAgent extends Agent<Env, State> {
     // that path, so load it explicitly.
     await this.mcp.ensureJsonSchema();
     const loggedTools = {
-      ...withToolLogging("custom", customTools),
+      ...withToolLogging("gmail", customTools),
       ...withToolLogging("stripe", this.mcp.getAITools()),
     };
 
