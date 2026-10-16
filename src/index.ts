@@ -46,7 +46,6 @@ function getStore(env: Env) {
   return env.ThreadStore.get(env.ThreadStore.idFromName(STORE_NAME));
 }
 const CONFIG_KEYS = ["google_refresh_token", "polling_enabled"];
-const SECRET_CONFIG_KEYS = ["google_refresh_token"];
 
 // Poll Gmail, record unseen threads as "enqueued", and put them on the queue.
 async function pollAndEnqueue(env: Env): Promise<string[]> {
@@ -114,12 +113,7 @@ export default {
     }
 
     if (isGetConfig) {
-      const config = await getStore(env).getConfig();
-      // Never echo secrets back; just report that they're set.
-      for (const key of SECRET_CONFIG_KEYS) {
-        if (key in config) config[key] = "<set>";
-      }
-      return Response.json(config);
+      return Response.json(await getStore(env).getConfig());
     }
 
     if (isSetConfig) {
