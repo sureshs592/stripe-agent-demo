@@ -2,7 +2,7 @@ import { Agent } from "agents";
 import { generateText, stepCountIs, tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import { getAttachmentBase64, getThreadMessages, markThreadProcessed } from "./gmail";
+import { getAttachmentBase64, getThreadMessages } from "./gmail";
 import skillPrompt from "../skills/pay-bills.md";
 
 const STRIPE_MCP_URL = "https://mcp.stripe.com";
@@ -156,14 +156,6 @@ export class EmailStripeAgent extends Agent<Env, State> {
             { type: "file", mediaType: "application/pdf", data: { type: "data", data: output.base64 } },
           ],
         }),
-      }),
-      mark_thread_processed: tool({
-        description: "Apply the \"processed\" Gmail label to a thread once its bill has been paid, so it won't be picked up on the next run.",
-        inputSchema: z.object({ threadId: z.string() }),
-        execute: async ({ threadId }) => {
-          await markThreadProcessed(this.env, refreshToken, threadId);
-          return { threadId, processed: true };
-        },
       }),
     };
     // getAITools() needs the AI SDK's jsonSchema, which MCPClientManager only
