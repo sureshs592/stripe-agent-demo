@@ -14,7 +14,7 @@
     { "tag": "v1", "new_sqlite_classes": ["EmailStripeAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["ThreadStore"] }
   ],
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": { "crons": [] },
   "queues": {
     "producers": [{ "binding": "THREAD_QUEUE", "queue": "bill-threads" }],
     "consumers": [
